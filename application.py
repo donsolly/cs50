@@ -1,210 +1,154 @@
-import os
+import os, re
 import requests
-import simplejson as json
-from flask import Flask, session, render_template, request, jsonify, redirect, flash
-from flask_session import Session
-from sqlalchemy import create_engine, func
-from sqlalchemy.orm import scoped_session, sessionmaker
-from passlib.hash import sha256_crypt
-from decimal import Decimal
+from time import localtime, strftime
+from flask import Flask, render_template, jsonify, request
+from flask_socketio import SocketIO, emit, send, join_room, leave_room
 
 app = Flask(__name__)
-# Check for environment variable
-if not os.getenv("DATABASE_URL"):
-    raise RuntimeError("DATABASE_URL is not set")
-
-# Configure session to use filesystem
-app.config["SESSION_PERMANENT"] = False
-app.config["SESSION_TYPE"] = "filesystem"
-Session(app)
-
-app.secret_key = 'some_secret' #flashmessage setup
-
-# Set up database
-engine = create_engine(os.getenv("DATABASE_URL"))
-db = scoped_session(sessionmaker(bind=engine))
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
+socketio = SocketIO(app)
 
 
-#index page 
-@app.route("/", methods=["GET","POST"])
+
+## For Testing Limit
+debug = True
+message_limit = 100
+
+# Rooms and User 
+rooms = ["general", "soccer", "tennis", "coding"]
+users = []
+online_users = []
+user_id = {}
+
+
+
+messages = {"general":[], "soccer":[], "tennis":[], "coding":[] }
+
+
+
+# Test the User Limit here
+if debug:
+	rooms.append("limit-test")
+	messages["limit-test"] = []
+	for i in range (99):
+		messages ["limit-test"].append(["I am just checking the limit", "doNROBOT" + str(i+1), "2020 01:10AM"])
+
+else:
+	messages = {}
+
+
+
+# CLean up strings from user information
+def sanitized_information(zone):
+    has_spaces = re.sub(r'[^a-zA-Z0-9 ]+','', zone)
+    hyphenated = '-'.join(has_spaces.split())
+    lower = hyphenated.lower()
+
+    return lower
+
+
+#Initial Page and List of rooms on load
+@app.route("/", methods=['GET', 'POST'])
 def index():
-   message = "Sign In"
-   enter = "Enter"
-   invalidinfo = "Invalid Username or Password"
-   session['logged_in'] = False
-   if request.method == "POST":
-      username = request.form.get("username")
-      password = request.form.get("password")
-      userdata = db.execute("SELECT * FROM users WHERE username = :username",{"username": username})
-      if userdata.rowcount == 0:
-         return render_template('index.html', invalidinfo=invalidinfo, message=message, enter=enter)
-      data = userdata.fetchone()[2]
-      if sha256_crypt.verify(request.form['password'], data):
-         session['logged_in'] = True
-         session['storing'] = username
-         return render_template('dashboard.html')
-      else:
-         return render_template('index.html', invalidinfo="invalidinfo", message=message, enter=enter)
-   return render_template("index.html", message=message, enter=enter)
 
-#Registration Page 
-@app.route("/register", methods=["GET","POST"])
-def register():
-   message = "Register"
-   enter = "Submit"
-   inuse = "Username in Use"
-   session['logged_in'] = False
-   successlog = "Successful Registration"
-   if request.method == "POST":
-      username = request.form.get("username")
-      password = request.form.get("password")
-      secure_password=sha256_crypt.encrypt(str(password))
-      if db.execute("SELECT * FROM users WHERE username = :username",{"username": username}).rowcount == 1:
-         return render_template("index.html", inuse=inuse, message=message, enter=enter)
-      db.execute("INSERT INTO users (username, password) VALUES (:username,:password)",{"username": username, "password": secure_password})
-      db.commit()
-      return render_template("index.html", sucesslog=successlog, message=message, enter=enter)
-      session.clear()
-   return render_template("index.html", message=message, enter=enter)
+	return render_template("index.html", rooms=rooms, users=users)
 
 
-#Dashboard Handler *
-@app.route("/dashboard", methods=["GET", "POST"])
-def dashboard():
-   if not session.get('logged_in'):
-      message = "Sign In"
-      enter = "Enter"
-      return render_template('index.html', message=message, enter=enter)
-   if request.method == "POST":
-      BookSearch = request.form.get("BookSearch")
-      ResultNote = "Requested Book Not Found"
-      BookResult = db.execute("SELECT * FROM books WHERE isbn LIKE :isbn OR title LIKE :title OR author LIKE :author",{ "isbn": '%' + BookSearch + '%', "title": '%' + BookSearch + '%', "author": '%' + BookSearch + '%'}).fetchall()
-      for BookSearch in BookResult:
-         return render_template("books.html", BookResult=BookResult)
-      return render_template ("dashboard.html", ResultNote=ResultNote)
-      db.commit()  
-   return render_template("dashboard.html")
 
 
-#BookView Handler * 
-@app.route("/booksview", methods=["GET", "POST"])
-def booksview():
-   if not session.get('logged_in'):
-      message = "Sign In"
-      enter = "Enter"
-      return render_template('index.html', message=message, enter=enter)
-   return render_template("dashboard.html")
+#Socket for all message
+@socketio.on ('message')
+def message(data):
 
-#Rating Handler * 
-@app.route("/rating/<string:isbn_id>", methods=["GET", "POST", "DELETE", "PUT"])
-def rating(isbn_id):
-   if not session.get('logged_in'):
-      message = "Sign In"
-      enter = "Enter"
-      return render_template('index.html', message=message, enter=enter)
-   ratings = db.execute("SELECT * FROM ratings WHERE isbn = :isbn",{"isbn":isbn_id}).fetchall()
-   bookname = db.execute ("SELECT * FROM books WHERE isbn = :isbn", {"isbn":isbn_id}).fetchall()
-   bookcheck = db.execute ("SELECT * FROM books WHERE isbn = :isbn", {"isbn":isbn_id}).rowcount
-   rating_check = db.execute("SELECT * FROM ratings WHERE isbn = :isbn",{"isbn":isbn_id}).rowcount
-   total = db.execute("SELECT AVG(rating) FROM ratings WHERE isbn = :isbn",{"isbn":isbn_id})
-   total_id = average = db.execute("SELECT COUNT(rating) FROM ratings WHERE isbn = :isbn",{"isbn":isbn_id})
-   key = "G4T2Wk4DpmmbsNmkzzfQA"
-   secret = "uHcEUcRMyUygQfzE8hVCGmVmfr4buWhwD0dx24k"
-   res = requests.get("https://www.goodreads.com/book/review_counts.json?",params={"isbns": isbn_id, "key": key})
-   #Inner Check # 
-   if bookcheck == 0:
-      return render_template("dashboard.html", ratings=ratings, bookname=bookname, nonfound="No Rating Available yet for selected book")
-   #Check good read
-   if res.status_code != 200:
-      nogoodread = "No information for the selected book on goodread"
-      return render_template("rating.html", ratings=ratings, bookname=bookname, nogoodread=nogoodread)
-   #Check Exisiting rating
-   if rating_check == 0:
-      jdata = res.json()
-      for each in jdata["books"]:
-         ratings_count = each['ratings_count']
-         average_rating = each['average_rating']
-         noreaderio = "No rating on reader.io for selected book"
-      return render_template("rating.html", ratings=ratings, bookname=bookname, nogoodread=noreaderio, ratings_count=ratings_count, average_rating=average_rating)
-   ##Action if Book has rating
-   for isbn_id in total:
-      total_val = round((isbn_id.avg),2)
-   for count in total_id:
-      count_val = count
-   jdata = res.json()
-   for each in jdata["books"]:
-      ratings_count = each['ratings_count']
-      average_rating = each['average_rating']
-   return render_template("rating.html", ratings=ratings, bookname=bookname, average=total_val, count_val=count_val, ratings_count=ratings_count, average_rating=average_rating)
-   db.commit()
+# Delete line late
+	message = data ['msg']
+	username = data ['username']
+	time_stamp = strftime('%b-%d %I:%M%p', localtime() )
+	room = data ['room']
+	room_clean = room.replace(" ", "")
+	saveinfo = [message, username, time_stamp]
+	if len(messages[room_clean]) >= message_limit:
+            messages[room_clean].pop(0)
+	messages[room_clean].append(saveinfo)
 
-#Submit Rating formform * 
-@app.route("/rating", methods=["POST", "GET"])
-def leavereview():
-   if request.method == "GET":
-      message = "Sign In"
-      enter = "Enter"
-      return render_template('index.html', message=message, enter=enter)
-   if not session.get('logged_in'):
-      message = "Sign In"
-      enter = "Enter"
-      return render_template('index.html', message=message, enter=enter)
-   review = request.form.get("message")
-   rating = request.form.get("rating")
-   isbn = request.form.get("isbn")
-   username = session['storing']
-   if db.execute("SELECT * FROM ratings where username = :username AND isbn = :isbn",{"username":username, "isbn":isbn}).rowcount == 1:
-   # if verify.rowcount is None:
-      flash('You have previously rated this book')
-      return redirect(request.referrer)
-   storereview = db.execute("INSERT INTO ratings (isbn, review, username, rating) VALUES (:isbn, :review, :username, :rating)",{"isbn": isbn, "review": review, "username":username, "rating":rating})
-   db.commit()
-   flash('Thank you for successfully reviewing this book')
-   return redirect(request.referrer)
-  
+# Delete line, done for debugging purpose
+	print (f"\n\n{data}\n\n")
 
-#For Logout * Completed
-@app.route('/logout')
-def logout():
-   message = "Sign In"
-   enter = "Enter"
-   session['logged_in'] = False
-   return render_template("index.html", message=message, enter=enter)
+	send({'msg': data['msg'], 'username': data['username'], 'time_stamp':strftime('%b-%d %I:%M%p', localtime() )}, room=data['room'])
+	emit('some-event', 'this is a custom event message')
 
 
-#For API System * Remains Avg review
-@app.route("/api/<string:api>")
-def api(api):
-   jvibes = db.execute("SELECT * FROM books WHERE isbn = :isbn",{"isbn":api})
-   if jvibes.rowcount == 0:
-      return jsonify({"error": "Invalid isbn_id"}), 422
-   else:
-      count = db.execute("SELECT * FROM ratings WHERE isbn = :isbn",{"isbn":api}).rowcount
-      total = db.execute("SELECT AVG(rating) FROM ratings WHERE isbn = :isbn",{"isbn":api})
-      readerio = db.execute("SELECT * FROM books WHERE isbn = :isbn",{"isbn":api}).fetchall()
-      if count == 0:
-         for api in readerio:
-               title = api.title
-               author = api.author
-               isbn = api.isbn
-               year = api.year
-               return jsonify({"title": title,"author": author,"Total_review": count,"year": year, "Average":"No Average Ratings Available"})
-      
-      for api in total:
-         average = json.dumps(Decimal(round((api.avg),2)), use_decimal=True)
-    
-      for api in readerio:
-         title = api.title
-         author = api.author
-         isbn = api.isbn
-         year = api.year
-         return jsonify({"title": title, "author": author, "Total_review": count, "year": year, "average":average })
+#Socket for Joining channels and what should happen
+@socketio.on('join')
+def join(data):
+	room_joined = data['room']
+	room_clean = room_joined.replace(" ", "")
+	for saveinfo in messages[room_clean]:
+		message = saveinfo[0]
+		username = saveinfo[1]
+		time_stamp = saveinfo[2]
+		emit ("old message",{"messages": message, "username": username, "time_stamp": time_stamp})
+	# Information on joining sent out to existing room users
+	join_room(data['room'])
+	send({'msg': data['username']  + " just joined" + data['room'] + "room."}, room=data['room'])
+
+#Socket when users leave a room
+@socketio.on ('leave')
+def leave(data):
+	leave_room(data['room'])
+	send({'msg': data['username']  + " just Left" + data['room'] + "room."}, room=data['room'])
 
 
-#Error Handler
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('404.html')
+
+#Create new rooms here
+@socketio.on("new_room")
+def new_message(data):
+	clean_room = sanitized_information(data['room_create'])
+	if clean_room not in rooms:
+		rooms.append(clean_room) 
+		messages[clean_room] = []
+		emit ("new room",{"room":clean_room}, broadcast=True)
 
 
-## Designed with love by olusola
+#SID Request 
+@socketio.on("add user")
+def new_user(data):
+	username = data['username']
+	clean_user = sanitized_information(data['username'])
+	if clean_user not in users:
+		users.append(clean_user)
+		online_users.append(clean_user)
+		user_id[request.id] = username
+	#	user_id[clean_user].append(sid_request)
+		# user_ui = user_id[sid_request]
+			
+	emit("welcome username", {"username": username})
+
+
+#broadcast login
+@socketio.on("welcome user")
+def user_login(data):
+	username = data['username']
+	clean_user = sanitized_information(data['username'])
+	if clean_user not in online_users:
+		online_users.append(clean_user) 
+		emit("welcome again", {"username": online_users}, broadcast=True)
+
+
+#Broadcast logout
+@socketio.on("exit chat")
+def chat_exit(data):
+	username = data['username']
+	clean_user = sanitized_information(data['username'])
+	online_users.remove(clean_user) 
+
+	emit("welcome again", {"username": online_users}, broadcast=True)
+
+
+
+
+
+
+
+if __name__ == '__main__':
+    socketio.run(app, debug=True)
