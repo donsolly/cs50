@@ -2,6 +2,8 @@
 
 Web Programming with Python and JavaScript
 
+The files were grouped in project2.zip
+(Having issues with git when creating branches, all previous uploads automatically moves here.)
 
 The website was codenamed Chatio:
 
