@@ -1,4 +1,4 @@
-# Project 3
+# Project 3 in a folder called Project 3 and also a zip file called project3
 
 Web Programming with Python and JavaScript
 
