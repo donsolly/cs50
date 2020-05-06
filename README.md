@@ -1,7 +1,5 @@
 This project was code-named = SchoolIO
 
-File in : finalproject.zip
-
 Brief Overview:
 The project is a portal for school registration, payment of fees, message broadcast to students and interuser message.
 This build is based on django, javascript and sqlite (the default database system on django).
